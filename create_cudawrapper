@@ -1,0 +1,8 @@
+#!/bin/sh
+EXEC=$1
+echo "Creating CUDA wrapper for $EXEC"
+BASE=`basename $EXEC`
+DIR=`dirname $EXEC`
+echo ${DIR}/CUDAWRAP_${EXEC}
+mv ${EXEC} ${DIR}/CUDAWRAP_${EXEC}
+ln -s /usr/local/share/gpus/cudawrap ${EXEC}

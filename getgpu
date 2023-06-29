@@ -1,0 +1,73 @@
+#!/bin/env python
+import sys
+import subprocess
+import random
+
+gpus = [l.strip() for l in open("/usr/local/share/gpus/ids")]
+smiout = subprocess.getoutput("nvidia-smi -L")
+gpuid = 0
+mig_guids = {}
+for line in smiout.splitlines():
+    parts = [p.strip() for p in line.split()]
+    #print(parts)
+    if parts[0].lower() == "gpu":
+        gpuid = int(parts[1].strip(":"))
+    elif parts[0].lower() == "mig":
+        migid = int(parts[3].strip(":"))
+        migguid = parts[5].rstrip(")")
+        mig_guids[(gpuid, migid)] = migguid
+#print(mig_guids)
+
+smiout = subprocess.getoutput("nvidia-smi")
+inprocs, inmigs = False, False
+migs = []
+used = []
+for line in smiout.splitlines():
+    parts = [p.strip() for p in line.split()]
+    #print(parts)
+    if len(parts) < 2:
+        continue
+    elif parts[1].lower() == "mig":
+        inmigs = True
+    elif parts[1].lower() == "processes:":
+        inmigs = False
+        inprocs = True
+    elif inmigs and len(parts) > 4:
+        try:
+            #print(parts)
+            gpu, gid, cid, migid = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
+            #print(gpu, gid, cid, migid, mig_guids[(gpu, migid)])
+            migs.append((gpu, gid, cid, mig_guids[(gpu, migid)]))
+        except ValueError:
+            pass
+
+    elif inprocs and len(parts) > 2:
+        try:
+            gpu, gid, cid = int(parts[1]), int(parts[2]), int(parts[3])
+            used.append((gpu, gid, cid))
+        except ValueError:
+            pass
+
+#print(migs)
+#print(used)
+#print(unused)
+
+if len(sys.argv) > 1:
+    try:
+        idx = int(sys.argv[1])
+    except ValueError:
+        sys.stderr.write("Usage: getgpu [idx]\n")
+        sys.exit(1)
+
+    if idx < 0 or idx >= len(migs):
+        sys.stderr.write("GPU index out of range (need 0-%i)\n" % len(gpus))
+        sys.exit(1)
+
+    print(migs[idx][3])
+else:
+    used = [guid for gpu, gid, cid, guid in migs if (gpu, gid, cid) in used]
+    unused = [guid for gpu, gid, cid, guid in migs if guid not in used]
+    idx = random.randint(0, len(unused)-1)
+    #print(used)
+    #print(unused)
+    print(unused[idx])
