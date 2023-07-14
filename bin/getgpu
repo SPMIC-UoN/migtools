@@ -1,23 +1,41 @@
-#!/bin/env python
-import sys
-import subprocess
+#!/bin/env python3
+"""
+Hacky script to attempt to return the ID of a 'free' GPU instance
+"""
+import os
 import random
+import subprocess
+import sys
 
-gpus = [l.strip() for l in open("/usr/local/share/gpus/ids")]
+# Check if we have a list of 'allowed' MIG GUIDs and if so, load it
+prefix = os.path.join(os.path.dirname(sys.argv[0]), os.pardir)
+idfile = os.path.join(prefix, "share", "gpus", "ids")
+if os.path.isfile(idfile):
+    allowed_guids = [l.strip() for l in open(idfile)]
+else:
+    allowed_guids = None
+#print("allowed: ", allowed_guids)
+
+# Use nvidia-smi to build a dictionary of MIG GUIDs keyed on GPUid, MIGid
 smiout = subprocess.getoutput("nvidia-smi -L")
+
 gpuid = 0
 mig_guids = {}
 for line in smiout.splitlines():
     parts = [p.strip() for p in line.split()]
-    #print(parts)
     if parts[0].lower() == "gpu":
         gpuid = int(parts[1].strip(":"))
     elif parts[0].lower() == "mig":
         migid = int(parts[3].strip(":"))
         migguid = parts[5].rstrip(")")
         mig_guids[(gpuid, migid)] = migguid
-#print(mig_guids)
+if not mig_guids:
+    # presumably means no GPUS
+    sys.exit(0)
+#print("known guids", mig_guids)
 
+# Use NVIDIA-SMI to build a list of known MIG instances and a list of 
+# processes currently running on them
 smiout = subprocess.getoutput("nvidia-smi")
 inprocs, inmigs = False, False
 migs = []
@@ -37,16 +55,19 @@ for line in smiout.splitlines():
             #print(parts)
             gpu, gid, cid, migid = int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])
             #print(gpu, gid, cid, migid, mig_guids[(gpu, migid)])
-            migs.append((gpu, gid, cid, mig_guids[(gpu, migid)]))
+            guid = mig_guids[(gpu, migid)]
+            if allowed_guids is None or guid in allowed_guids:
+                migs.append((gpu, gid, cid, guid))
         except ValueError:
             pass
-
     elif inprocs and len(parts) > 2:
         try:
             gpu, gid, cid = int(parts[1]), int(parts[2]), int(parts[3])
             used.append((gpu, gid, cid))
         except ValueError:
             pass
+#print(migs)
+#print("used", used)
 
 #print(migs)
 #print(used)
@@ -65,8 +86,10 @@ if len(sys.argv) > 1:
 
     print(migs[idx][3])
 else:
+    # Select a random unused instance
     used = [guid for gpu, gid, cid, guid in migs if (gpu, gid, cid) in used]
     unused = [guid for gpu, gid, cid, guid in migs if guid not in used]
+    #print(used, unused)
     idx = random.randint(0, len(unused)-1)
     #print(used)
     #print(unused)

@@ -1,6 +1,0 @@
-#!/bin/sh
-MIG_GUID=`getgpu`
-EXEC=`basename $0`
-DIR=`dirname $0`
-CUDA_VISIBLE_DEVICES=$MIG_GUID ${DIR}/CUDAWRAP_${EXEC} "$@"
-

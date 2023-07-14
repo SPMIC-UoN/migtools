@@ -1,0 +1,14 @@
+#!/bin/sh
+PREFIX=`dirname $0`/..
+if [ -z "${CUDA_VISIBLE_DEVICES}" ]; then
+    MIG_GUID=`$PREFIX/bin/getgpu`
+    #echo "Using random GPU $MIG_GUID"
+    export CUDA_VISIBLE_DEVICES=$MIG_GUID
+else
+    #echo "Already defined: $CUDA_VISIBLE_DEVICES"
+fi
+
+EXEC=`basename $0`
+DIR=`dirname $0`
+${DIR}/CUDAWRAP_${EXEC} "$@"
+
