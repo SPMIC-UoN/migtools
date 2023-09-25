@@ -1,9 +1,0 @@
-#!/bin/sh
-EXEC=$1
-echo "Creating CUDA wrapper for $EXEC"
-BASE=`basename $EXEC`
-DIR=`dirname $EXEC`
-PREFIX=`dirname $0`/..
-echo ${DIR}/CUDAWRAP_${BASE}
-mv "${EXEC}" "${DIR}/CUDAWRAP_${BASE}"
-ln -s "${PREFIX}/bin/cudawrap" "${BASE}"

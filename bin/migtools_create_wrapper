@@ -1,0 +1,9 @@
+#!/bin/sh
+EXEC=$1
+echo "Creating MIG GPU allocation wrapper for $EXEC"
+BASE=`basename $EXEC`
+DIR=`dirname $EXEC`
+PREFIX=`dirname $0`/..
+echo ${DIR}/MIGTOOLS_${BASE}
+mv "${EXEC}" "${DIR}/MIGTOOLS_${BASE}"
+ln -s "${PREFIX}/bin/migtools_wrapper" "${BASE}"
