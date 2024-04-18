@@ -10,11 +10,16 @@ and outputs the GUID to be used in CUDA_VISIBLE_DEVICES.
 """
 import os
 import errno
+import logging
 import random
 import subprocess
 import sys
 import time
- 
+
+# Under normal circumstances no log output is generated but can
+# switch on debug mode 
+LOG = logging.getLogger(__name__)
+
 class FileLockException(Exception):
     pass
 
@@ -47,7 +52,7 @@ class FileLock(object):
             try:
                 self.fd = os.open(self.lockfile, os.O_CREAT|os.O_EXCL|os.O_RDWR)
                 self.is_locked = True #moved to ensure tag only when locked
-                break;
+                break
             except OSError as e:
                 if e.errno != errno.EEXIST:
                     raise
@@ -56,7 +61,6 @@ class FileLock(object):
                 if (time.time() - start_time) >= self.timeout:
                     raise FileLockException("Timeout occured.")
                 time.sleep(self.delay)
-#        self.is_locked = True
 
     def release(self):
         """ Get rid of the lock by deleting the lockfile. 
@@ -93,62 +97,96 @@ def check_pid(pid):
     """ Check For the existence of a unix pid. """
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
     else:
         return True
 
-# Check if we have a list of 'allowed' MIG GUIDs and if so, load it
-prefix = os.path.join(os.path.dirname(sys.argv[0]), os.pardir)
-idfile = os.path.join(prefix, "share", "migtools", "ids")
-if os.path.isfile(idfile):
-    allowed_guids = [l.strip() for l in open(idfile)]
-else:
-    allowed_guids = None
+def main(prefix):
+    # Check if we have a list of 'allowed' MIG GUIDs and if so, load it
+    idfile = os.path.join(prefix, "share", "migtools", "ids")
+    if os.path.isfile(idfile):
+        allowed_guids = [l.strip() for l in open(idfile)]
+        LOG.debug(f"Found {len(allowed_guids)} allowed GPU GUIDs: {allowed_guids}")
+    else:
+        LOG.debug("Any GPU is allowed")
+        allowed_guids = None
 
-# Use nvidia-smi to build a list of MIG GUIDs filtered by allowed list
-smiout = subprocess.getoutput("nvidia-smi -L")
-mig_guids = []
-for line in smiout.splitlines():
-    parts = [p.strip() for p in line.split()]
-    if parts[0].lower() == "mig":
-        guid = parts[5].rstrip(")")
-        if allowed_guids is None or guid in allowed_guids:
-            mig_guids.append(guid)
-if not mig_guids:
-    # presumably means no GPUS
-    sys.exit(0)
+    # Use nvidia-smi to build a list of MIG GUIDs filtered by allowed list
+    smiout = subprocess.getoutput("nvidia-smi -L")
+    mig_guids = []
+    for line in smiout.splitlines():
+        parts = [p.strip() for p in line.split()]
+        if parts[0].lower() == "mig":
+            guid = parts[5].rstrip(")")
+            if allowed_guids is None or guid in allowed_guids:
+                mig_guids.append(guid)
+    if not mig_guids:
+        # presumably means no GPUS
+        LOG.warn(f"No GPUs found from NVIDIA-SMI")
+        sys.exit(0)
+    LOG.debug(f"NVIDIA-SMI reports {len(mig_guids)} GPUs: {mig_guids}")
 
-# Update process IDs known to be using the GPU
-mypid, myppid = os.getpid(), os.getppid()
-procidfile = os.path.join(prefix, "share", "migtools", "procids")
-with FileLock(procidfile):
-    # Go through current list of processes using the GPU and eliminate ones no longer running
-    running_pids, used_guids = [], []
-    if os.path.exists(procidfile):
-        with open(procidfile, "r") as f:
-            for line in f.readlines():
-                parts = line.split()
-                if len(parts) == 2:
-                    pid, guid = parts
-                    pid = int(pid)
-                    if pid == myppid:
-                        # We have called the script twice for the same process...
-                        print(guid)
-                        sys.exit(0)
-                    elif check_pid(int(pid)):
-                        # Process is still running, so keep it in the used list
-                        running_pids.append(f"{pid} {guid}")
-                        used_guids.append(guid)
-        
-    # Update list of processes still running, and add ourselves
-    with open(procidfile, "w") as f:
-        for line in running_pids:
-            f.write(line + "\n")
+    # Update process IDs known to be using the GPU
+    mypid, myppid = os.getpid(), os.getppid()
+    LOG.debug(f"My parent process ID is: {myppid}")
+    procidfile = os.path.join(prefix, "share", "migtools", "procids")
+    with FileLock(procidfile):
+        # Go through current list of processes using the GPU and eliminate ones no longer running
+        running_pids, used_guids = [], []
+        if os.path.exists(procidfile):
+            with open(procidfile, "r") as f:
+                for line in f.readlines():
+                    parts = line.split()
+                    if len(parts) == 2:
+                        pid, guid = parts
+                        pid = int(pid)
+                        if pid == myppid:
+                            # We have called the script twice for the same process...
+                            LOG.debug(f"I have already been allocated a GPU - returning {guid}")
+                            print(guid)
+                            sys.exit(0)
+                        elif check_pid(int(pid)):
+                            # Process is still running, so keep it in the used list
+                            LOG.debug(f"Process {pid} is still running, so keeping it in the list with GPU {guid}")
+                            running_pids.append(f"{pid} {guid}")
+                            used_guids.append(guid)
+                        else:
+                            LOG.debug(f"Process {pid} is no longer running, so freeing up GPU {guid}")
 
-        unused = [guid for guid in mig_guids if guid not in used_guids]
-        # If nothing unused, just give no output, it will fight with existing processes
-        if len(unused) > 0:
-            idx = random.randint(0, len(unused)-1)
-            f.write(f"{myppid} {unused[idx]}")
-            print(unused[idx])
+        LOG.debug(f"{len(used_guids)} GPUs in use: {used_guids}")
+        # Update list of processes still running, and add ourselves
+        with open(procidfile, "w") as f:
+            for line in running_pids:
+                f.write(line + "\n")
+
+            unused = [guid for guid in mig_guids if guid not in used_guids]
+            LOG.debug(f"{len(unused)} GPUs not in use: {unused}")
+            # If nothing unused, just give no output, it will fight with existing processes
+            if len(unused) > 0:
+                idx = random.randint(0, len(unused)-1)
+                f.write(f"{myppid} {unused[idx]}")
+                LOG.debug(f"Allocating unused GPU: {unused[idx]}")
+                print(unused[idx])
+
+def setup_logging(prefix):
+    handlers = []
+    debug_logfile = os.path.join(prefix, "share", "migtools", "debug.log")
+    if os.path.exists(debug_logfile):
+        handlers.append(logging.FileHandler(debug_logfile))
+    if "--debug" in sys.argv:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=logging.DEBUG if handlers else logging.ERROR,
+        handlers=handlers
+    )
+    LOG.debug(f"Working off prefix: {prefix}")
+
+def get_prefix():
+    return os.path.abspath(os.path.normpath(os.path.join(os.path.dirname(sys.argv[0]), os.pardir)))
+
+if __name__ == "__main__":
+    prefix = get_prefix()
+    setup_logging(prefix)
+    main(prefix)
